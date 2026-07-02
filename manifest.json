@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "locale": "en_US.UTF-8",
+  "platform": "4.3.2",
+  "metadata": {
+    "appmode": "api",
+    "primary_rmd": null,
+    "primary_html": null,
+    "content_category": null,
+    "has_parameters": false,
+    "entrypoint": "plumber.R"
+  },
+  "packages": {
+    "plumber": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "plumber",
+        "Version": "1.2.1"
+      }
+    },
+    "curl": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "curl",
+        "Version": "5.0.0"
+      }
+    }
+  },
+  "files": {
+    "plumber.R": {
+      "checksum": "5b5d2217fa33e73a38f08a04c3dfc9ce"
+    }
+  }
+}
