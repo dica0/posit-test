@@ -1,4 +1,4 @@
-# Sonda de contexto — pentest autorizado Posit Connect
+# Sonda de contexto
 
 Contenido Plumber (R) para confirmar alcance de IMDS/ECS/K8s desde el sandbox de ejecución.
 
