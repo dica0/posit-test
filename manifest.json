@@ -3,34 +3,23 @@
   "locale": "en_US.UTF-8",
   "platform": "4.5.0",
   "metadata": {
-    "appmode": "api",
-    "primary_rmd": null,
+    "appmode": "rmd-static",
+    "primary_rmd": "probe.Rmd",
     "primary_html": null,
     "content_category": null,
     "has_parameters": false,
-    "entrypoint": "plumber.R"
+    "entrypoint": "probe.Rmd"
   },
   "packages": {
-    "plumber": {
+    "rmarkdown": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "plumber",
-        "Version": "1.2.1"
-      }
-    },
-    "curl": {
-      "Source": "CRAN",
-      "Repository": "https://cran.rstudio.com",
-      "description": {
-        "Package": "curl",
-        "Version": "5.0.0"
-      }
+      "description": { "Package": "rmarkdown", "Version": "2.29" }
     }
   },
   "files": {
-    "plumber.R": {
-      "checksum": "5b5d2217fa33e73a38f08a04c3dfc9ce"
+    "probe.Rmd": {
+      "checksum": "a8d3815687bee3835127584bfd4a94f3"
     }
   }
 }
